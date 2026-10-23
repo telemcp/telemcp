@@ -5,8 +5,8 @@ telemcp is an open source Telegram MCP server that connects your own Telegram ac
 Don't want to run it yourself? A hosted version is coming at telemcp.com.
 
 ```bash
-npx telemcp login
-claude mcp add telemcp -- npx -y telemcp
+npx -y github:telemcp/telemcp login
+claude mcp add telemcp -- npx -y github:telemcp/telemcp
 ```
 
 ## What you can ask your assistant
@@ -28,7 +28,7 @@ You need Node.js 20 or newer and a Telegram account.
 2. Log in from a terminal:
 
    ```bash
-   npx telemcp login
+   npx -y github:telemcp/telemcp login
    ```
 
    It asks for the api_id, the api_hash, your phone number, the login code Telegram sends you, and your two step verification password if you set one. The session is saved in `~/.telemcp/session`, readable only by you.
@@ -47,7 +47,7 @@ Edit `claude_desktop_config.json` (Settings, Developer, Edit Config):
   "mcpServers": {
     "telemcp": {
       "command": "npx",
-      "args": ["-y", "telemcp"]
+      "args": ["-y", "github:telemcp/telemcp"]
     }
   }
 }
@@ -56,19 +56,19 @@ Edit `claude_desktop_config.json` (Settings, Developer, Edit Config):
 ### Claude Code
 
 ```bash
-claude mcp add telemcp -- npx -y telemcp
+claude mcp add telemcp -- npx -y github:telemcp/telemcp
 ```
 
 ### OpenClaw
 
 ```bash
-openclaw mcp add telemcp --command npx --arg -y --arg telemcp
+openclaw mcp add telemcp --command npx --arg -y --arg github:telemcp/telemcp
 ```
 
 or as a JSON server object:
 
 ```bash
-openclaw mcp set telemcp '{"command":"npx","args":["-y","telemcp"]}'
+openclaw mcp set telemcp '{"command":"npx","args":["-y","github:telemcp/telemcp"]}'
 ```
 
 ### Cursor
@@ -80,7 +80,7 @@ Add to `~/.cursor/mcp.json` (or `.cursor/mcp.json` in a project):
   "mcpServers": {
     "telemcp": {
       "command": "npx",
-      "args": ["-y", "telemcp"]
+      "args": ["-y", "github:telemcp/telemcp"]
     }
   }
 }
@@ -88,10 +88,10 @@ Add to `~/.cursor/mcp.json` (or `.cursor/mcp.json` in a project):
 
 ### Any other MCP client
 
-telemcp speaks MCP over stdio by default: run `npx -y telemcp`. For clients that connect over HTTP, start it on your own machine:
+telemcp speaks MCP over stdio by default: run `npx -y github:telemcp/telemcp`. For clients that connect over HTTP, start it on your own machine:
 
 ```bash
-npx telemcp serve --http --port 8788 --token choose-a-long-secret
+npx -y github:telemcp/telemcp serve --http --port 8788 --token choose-a-long-secret
 ```
 
 The endpoint is `http://127.0.0.1:8788/mcp`; send the token as `Authorization: Bearer choose-a-long-secret`. It only listens on 127.0.0.1.
@@ -123,7 +123,7 @@ As an MCP client entry:
 telemcp can run as a Telegram bot instead of your user account. Create a bot with @BotFather, then:
 
 ```bash
-npx telemcp login --bot-token 123456:ABC...
+npx -y github:telemcp/telemcp login --bot-token 123456:ABC...
 ```
 
 or set `TELEMCP_BOT_TOKEN` (with `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`) and start the server; it logs the bot in by itself. Bots still connect through MTProto, so they also need an api_id and api_hash.
