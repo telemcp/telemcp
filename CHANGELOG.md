@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+* Docker image builds on arm64 and amd64 (build tools in the build stage).
+* Install straight from GitHub with npx (the package builds on install).
+
 ## 0.1.0
 
 * First release: Telegram MCP server for user accounts (MTProto with your own api_id and api_hash) and bots.
