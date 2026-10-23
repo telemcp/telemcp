@@ -1,6 +1,6 @@
 {
   "name": "telemcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Open source Telegram MCP server. Connect your own Telegram account or a bot to Claude and other AI assistants. Runs on your machine.",
   "type": "module",
   "license": "MIT",

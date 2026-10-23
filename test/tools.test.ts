@@ -71,7 +71,11 @@ describe("door contract", () => {
     expect(r.isError).toBe(true);
     expect(text(r)).toMatchObject({ error_code: "invalid_input" });
     const int = (await client.callTool({ name: "send_message", arguments: { to: { telegram_user_id: 100 }, text: "hi" } })) as any;
-    expect(text(int).error_code).not.toBe("invalid_recipient");
+    expect(text(int).error_code).toBe("invalid_recipient");
+    const str = (await client.callTool({ name: "send_message", arguments: { to: { telegram_user_id: "100" }, text: "hi" } })) as any;
+    expect(text(str).error_code).toBe("no_connected_account");
+    const noText = (await client.callTool({ name: "send_message", arguments: { to: { contact_id: "100" } } })) as any;
+    expect(text(noText).error_code).toBe("invalid_input");
   });
 
   it("registered tools match the contract exactly (names, fields, required)", async () => {
@@ -91,6 +95,8 @@ describe("door contract", () => {
     expect(Object.keys(to.properties).sort()).toEqual(["contact_id", "phone", "telegram_user_id", "telegram_username"]);
     expect(to.maxProperties).toBe(1);
     expect(JSON.stringify(tools)).not.toContain("local_only");
+    expect(JSON.stringify(tools)).not.toContain("hosted_only");
+    expect(send.inputSchema.required).toContain("text");
     expect(Object.keys((send.inputSchema.properties as any) ?? {})).toContain("media_path");
   });
 
@@ -99,7 +105,17 @@ describe("door contract", () => {
     const client = await connect(service);
     expect(client.getInstructions()).toContain("door-contract 1.0");
     const r = await client.callTool({ name: "get_usage", arguments: {} });
-    expect(text(r as any)).toMatchObject({ plan: "self-hosted", contract_version: "1.0", sends: 0, sends_cap: 200, new_contacts_cap: 20 });
+    expect(text(r as any)).toMatchObject({
+      plan: "self-hosted",
+      contract_version: "1.0",
+      sends: 0,
+      sends_cap: 200,
+      new_contacts_cap: 20,
+      status: "active",
+      accounts_total: 1,
+      accounts_connected: 0,
+      accounts_cap: 1,
+    });
   });
 
   it("old names are gone", () => {
@@ -112,14 +128,34 @@ describe("tool calls over MCP", () => {
   it("not logged in: get_telegram_status explains how to log in, sends refuse with a contract error", async () => {
     const { service } = makeService();
     const client = await connect(service);
-    const st = text((await client.callTool({ name: "get_telegram_status", arguments: {} })) as any);
-    expect(st).toMatchObject({ channel: "telegram", status: "disconnected" });
+    const st = text((await client.callTool({ name: "get_telegram_status", arguments: { phoneNumber: "+31612345678" } })) as any);
+    expect(st).toMatchObject({ success: true, phone_number: "+31612345678", status: "not_initialized", live: false });
     expect(st.detail).toContain("telemcp login");
     const r = (await client.callTool({ name: "send_message", arguments: { to: { contact_id: "100" }, text: "hi" } })) as any;
     expect(r.isError).toBe(true);
     expect(text(r)).toMatchObject({ error_code: "no_connected_account" });
     const accounts = text((await client.callTool({ name: "list_accounts", arguments: {} })) as any);
     expect(accounts.accounts).toHaveLength(1);
+    expect(accounts.channels).toEqual([{ channel: "telegram", label: "Telegram", connect_kind: "code", max_accounts: 1 }]);
+  });
+
+  it("connection tools refuse with {success: false, error_code: <HTTP status>, error}", async () => {
+    const { service } = makeService();
+    const client = await connect(service);
+    const qr = (await client.callTool({ name: "connect_telegram", arguments: { phone_number: "+31612345678", mode: "qr" } })) as any;
+    expect(qr.isError).toBe(true);
+    expect(text(qr)).toMatchObject({ success: false, error_code: 400 });
+    expect(text(qr).error).toContain("QR login is not supported");
+    const missing = (await client.callTool({ name: "get_telegram_status", arguments: {} })) as any;
+    expect(text(missing)).toMatchObject({ success: false, error_code: 400 });
+    const ok = text((await client.callTool({ name: "connect_telegram", arguments: { phone_number: "+31612345678" } })) as any);
+    expect(ok).toMatchObject({ success: true, phone_number: "+31612345678", status: "code_required" });
+    const other = (await client.callTool({ name: "get_telegram_status", arguments: { phoneNumber: "+31699999999" } })) as any;
+    expect(text(other)).toEqual({ success: false, error_code: 404, error: "No connection for that number." });
+    const early = (await client.callTool({ name: "submit_telegram_password", arguments: { phoneNumber: "+31612345678", password: "x" } })) as any;
+    expect(text(early)).toMatchObject({ success: false, error_code: 409 });
+    const bad = (await client.callTool({ name: "submit_telegram_code", arguments: { phoneNumber: "+31612345678", code: "00000" } })) as any;
+    expect(text(bad)).toMatchObject({ success: false, error_code: 400 });
   });
 
   it("malformed input is a contract error, not a protocol error", async () => {

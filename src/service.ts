@@ -22,7 +22,7 @@ import {
 } from "./wire.js";
 
 export interface Recipient {
-  telegram_user_id?: string | number;
+  telegram_user_id?: string;
   telegram_username?: string;
   phone?: string;
   contact_id?: string;
@@ -254,7 +254,54 @@ export class TeleService {
     const problem = this.guard.authProblem();
     if (problem) throw authError(problem);
     if (accountId && accountId !== this.accountId())
-      throw new ToolError("no_connected_account", `Unknown account_id ${accountId}. This server has one account: ${this.accountId()}.`);
+      throw new ToolError("account_not_found", `Unknown account_id ${accountId}. This server has one account: ${this.accountId()}.`);
+  }
+
+  /** A chat_id used as a filter: undefined when absent, null when it names no known chat (the result is then empty). */
+  private async chatFilter(ref?: string): Promise<ChatInfo | null | undefined> {
+    if (ref === undefined || ref === "") return undefined;
+    try {
+      return await this.resolveChatId(ref);
+    } catch (e) {
+      if (e instanceof ToolError && e.code === "contact_not_found") return null;
+      if (e instanceof ToolError && e.code === "invalid_recipient") throw new ToolError("invalid_chat_id", e.message);
+      throw e;
+    }
+  }
+
+  // ---------------------------------------------------------------- phone numbers on the connection tools
+
+  /** The number this server is connected to (or was given to connect_telegram), as +digits. */
+  private knownPhone(): string | undefined {
+    const p = this.store.getState("phone_number") ?? this.me?.phone;
+    const digits = p?.replace(/\D/g, "");
+    return digits ? "+" + digits : undefined;
+  }
+
+  /**
+   * Checks phoneNumber on a connection tool against the number this server knows. Bot mode has no number
+   * (any value is accepted, null is reported). When no number is known yet the given one is remembered.
+   */
+  private checkPhone(input: unknown): string | null {
+    if (this.mode === "bot") return null;
+    const digits = String(input ?? "").replace(/\D/g, "");
+    if (digits.length < 6 || digits.length > 16)
+      throw new ToolError("invalid_input", "phoneNumber must be a phone number in international format, for example +31612345678.");
+    const known = this.knownPhone();
+    if (known && known.slice(1) !== digits) throw new ToolError("account_not_found", "No connection for that number.");
+    if (!known) this.store.setState("phone_number", "+" + digits);
+    return "+" + digits;
+  }
+
+  private loginResult(phone: string | null, status: string, extra: Record<string, unknown> = {}) {
+    return {
+      success: true as const,
+      phone_number: phone,
+      status,
+      telegram_user_id: status === "connected" ? (this.me?.id ?? null) : null,
+      username: status === "connected" ? (this.me?.username ?? null) : null,
+      ...extra,
+    };
   }
 
   private wire(m: StoredMessage): WireMessage {
@@ -387,8 +434,17 @@ export class TeleService {
     };
   }
 
-  /** get_telegram_status: the account plus a plain explanation of what to do next. */
-  status(): WireAccount & { detail: string } {
+  /** get_telegram_status: the connection state plus a plain explanation of what to do next. */
+  status(input: { phoneNumber: string }): {
+    success: true;
+    phone_number: string | null;
+    status: "connected" | "code_required" | "password_required" | "initializing" | "disconnected" | "not_initialized" | "error";
+    telegram_user_id: string | null;
+    live: boolean;
+    limits: WireAccount["limits"];
+    detail: string;
+  } {
+    const phone = this.checkPhone(input.phoneNumber);
     const a = this.account();
     const u = this.guard.usage();
     let detail: string;
@@ -402,11 +458,31 @@ export class TeleService {
     else if (u.floodUntil) detail = `Connected. Sends paused by Telegram (${u.floodReason}) until ${new Date(u.floodUntil).toISOString()}.`;
     else if (u.peerFloodToday) detail = "Connected. Telegram returned PEER_FLOOD today: new contact sends are stopped until local midnight.";
     else detail = `Connected in ${this.mode} mode.`;
-    return { ...a, detail };
+    let status: ReturnType<TeleService["status"]>["status"];
+    if (u.authProblem) status = "error";
+    else if (this.connected) status = "connected";
+    else if (this.phase === "code_required" || this.phase === "password_required") status = this.phase;
+    else if (this.starting) status = "initializing";
+    else status = readSession(this.paths) || this.store.getState("account_id") ? "disconnected" : "not_initialized";
+    return {
+      success: true,
+      phone_number: phone,
+      status,
+      telegram_user_id: this.connected ? (this.me?.id ?? null) : null,
+      live: this.connected,
+      limits: a.limits,
+      detail,
+    };
   }
 
-  listAccounts(): { accounts: WireAccount[] } {
-    return { accounts: [this.account()] };
+  listAccounts(): {
+    accounts: WireAccount[];
+    channels: { channel: string; label: string; connect_kind: string; max_accounts: number }[];
+  } {
+    return {
+      accounts: [this.account()],
+      channels: [{ channel: CHANNEL, label: "Telegram", connect_kind: "code", max_accounts: 1 }],
+    };
   }
 
   usage(): Record<string, unknown> {
@@ -418,21 +494,36 @@ export class TeleService {
       sends_cap: u.sendsCap,
       new_contacts: u.newContacts,
       new_contacts_cap: u.newContactsCap,
+      status: u.authProblem?.kind === "banned" ? "suspended" : "active",
+      accounts_total: 1,
+      accounts_connected: this.connected ? 1 : 0,
+      accounts_cap: 1,
+      ramp_day: null,
       contract_version: CONTRACT_VERSION,
     };
+    if (u.authProblem?.kind === "banned") out.suspended_reason = u.authProblem.reason;
     if (u.floodUntil) out.paused_until = new Date(u.floodUntil).toISOString();
     if (u.peerFloodToday) out.new_contacts_stopped_today = true;
     if (u.nextNewContactAt) out.next_new_contact_at = new Date(u.nextNewContactAt).toISOString();
     return out;
   }
 
-  async connectTelegram(input: { phone: string }): Promise<{ account_id: string; status: string }> {
-    if (this.connected && !this.guard.authProblem()) return { account_id: this.accountId(), status: "connected" };
-    if (this.mode === "bot" && this.env.TELEMCP_BOT_TOKEN)
-      this.notForBots("Phone login");
-    const phone = String(input.phone ?? "").replace(/[\s()-]/g, "");
+  async connectTelegram(input: { phone_number: string; mode?: "code" | "qr"; force_new?: boolean }) {
+    if (input.mode === "qr") throw new ToolError("invalid_input", "QR login is not supported by self-hosted telemcp; use mode code.");
+    const phone = String(input.phone_number ?? "").replace(/[\s()-]/g, "");
     if (!/^\+?\d{6,16}$/.test(phone))
-      throw new ToolError("invalid_input", "phone must be your Telegram phone number in international format, for example +31612345678.");
+      throw new ToolError("invalid_input", "phone_number must be your Telegram phone number in international format, for example +31612345678.");
+    const digits = "+" + phone.replace(/\D/g, "");
+    if (input.force_new) {
+      if (this.port || this.pending || readSession(this.paths)) await this.logOutLocal();
+    } else if (this.connected && !this.guard.authProblem()) {
+      if (this.mode === "bot") return this.connectResult(null, "connected");
+      const known = this.knownPhone();
+      if (known && known !== digits)
+        throw new ToolError("invalid_input", `This server is connected to another number. Pass force_new: true to log it out and connect ${digits}.`);
+      return this.connectResult(known ?? digits, "connected");
+    }
+    if (this.mode === "bot" && this.env.TELEMCP_BOT_TOKEN) this.notForBots("Phone login");
     const creds = apiCredentials(this.config(), this.env);
     if (!creds)
       throw new ToolError(
@@ -442,10 +533,16 @@ export class TeleService {
     await this.pending?.cancel().catch(() => undefined);
     this.pending = await this.tg(() => this.connector.startUserLogin(phone, creds));
     this.phase = "code_required";
-    return { account_id: this.accountId(), status: "code_required" };
+    this.store.setState("phone_number", digits);
+    return this.connectResult(digits, "code_required");
   }
 
-  async submitCode(input: { code: string }): Promise<{ account_id: string; status: string; hint?: string }> {
+  private connectResult(phone: string | null, status: "code_required" | "connected") {
+    return { success: true as const, phone_number: phone, status, session_id: "local", account_id: "local" };
+  }
+
+  async submitCode(input: { phoneNumber: string; code: string }) {
+    const phone = this.checkPhone(input.phoneNumber);
     const pending = this.pending;
     if (!pending || this.phase !== "code_required")
       throw new ToolError("code_required", "No login is waiting for a code. Call connect_telegram first.");
@@ -454,19 +551,20 @@ export class TeleService {
     const r = await this.tg(() => pending.submitCode(code));
     if (r.status === "password_required") {
       this.phase = "password_required";
-      return { account_id: this.accountId(), status: "password_required", ...(r.hint ? { hint: r.hint } : {}) };
+      return this.loginResult(phone, "password_required", r.hint ? { hint: r.hint } : {});
     }
     await this.finishLogin(r.port);
-    return { account_id: this.accountId(), status: "connected" };
+    return this.loginResult(phone, "connected");
   }
 
-  async submitPassword(input: { password: string }): Promise<{ account_id: string; status: string }> {
+  async submitPassword(input: { phoneNumber: string; password: string }) {
+    const phone = this.checkPhone(input.phoneNumber);
     const pending = this.pending;
     if (!pending || this.phase !== "password_required")
       throw new ToolError("password_required", "No login is waiting for a password. Call connect_telegram first.");
     const port = await this.tg(() => pending.submitPassword(String(input.password ?? "")));
     await this.finishLogin(port);
-    return { account_id: this.accountId(), status: "connected" };
+    return this.loginResult(phone, "connected");
   }
 
   private async finishLogin(port: TelegramPort): Promise<void> {
@@ -476,7 +574,14 @@ export class TeleService {
     await this.attach(port);
   }
 
-  async disconnectTelegram(): Promise<{ disconnected: true }> {
+  async disconnectTelegram(input: { phoneNumber: string }): Promise<{ success: true; phone_number: string | null; status: "removed" }> {
+    const phone = this.checkPhone(input.phoneNumber);
+    await this.logOutLocal();
+    return { success: true, phone_number: phone, status: "removed" };
+  }
+
+  /** Logs out of Telegram (best effort) and removes the local session and the remembered number. */
+  private async logOutLocal(): Promise<void> {
     const port = this.port;
     this.port = undefined;
     this.phase = "disconnected";
@@ -488,8 +593,8 @@ export class TeleService {
     }
     deleteSession(this.paths);
     this.store.setState("connected_at", undefined);
+    this.store.setState("phone_number", undefined);
     this.guard.clearAuthProblem();
-    return { disconnected: true };
   }
 
   // ---------------------------------------------------------------- messaging tools
@@ -500,17 +605,19 @@ export class TeleService {
     text?: string;
     media_url?: string;
     media_path?: string;
-    reply_to?: string | number;
-  }): Promise<{ message_id: string; status: "sent" }> {
+    reply_to?: string;
+    opt_in?: boolean;
+  }): Promise<{ message_id: string; status: "sent"; reply_to_applied: boolean }> {
     this.checkAccount(input.account_id);
     const text = input.text ?? "";
     const hasMedia = !!(input.media_url || input.media_path);
     if (input.media_url && input.media_path)
       throw new ToolError("invalid_input", "Pass media_url or media_path, not both.");
-    if (!text.trim() && !hasMedia) throw new ToolError("invalid_input", "text is empty. Pass text, media_url or media_path.");
-    if (text.length > MAX_TEXT) throw new ToolError("invalid_input", `text is longer than ${MAX_TEXT} characters.`);
+    if (!text.trim()) throw new ToolError("invalid_text", "text is required: the message, or the caption when media is attached.");
+    if (text.length > MAX_TEXT) throw new ToolError("invalid_text", `text is longer than ${MAX_TEXT} characters.`);
     if (hasMedia && text.length > MAX_CAPTION)
-      throw new ToolError("invalid_input", `A media caption is limited to ${MAX_CAPTION} characters. Send the text as its own message.`);
+      throw new ToolError("invalid_text", `A media caption is limited to ${MAX_CAPTION} characters. Send the text as its own message.`);
+    if (input.opt_in) log.debug("send_message with opt_in: true (accepted; self-hosted limits apply as usual)");
 
     let file: string | undefined;
     if (input.media_url) {
@@ -518,9 +625,9 @@ export class TeleService {
       try {
         u = new URL(input.media_url);
       } catch {
-        throw new ToolError("media_unavailable", "media_url is not a valid URL.");
+        throw new ToolError("invalid_media_url", "media_url is not a valid URL.");
       }
-      if (u.protocol !== "https:") throw new ToolError("media_unavailable", "media_url must be an https URL.");
+      if (u.protocol !== "https:") throw new ToolError("invalid_media_url", "media_url must be an https URL.");
       file = u.toString();
     } else if (input.media_path) {
       const p = resolve(input.media_path.replace(/^~(?=$|\/)/, homedir()));
@@ -539,10 +646,10 @@ export class TeleService {
       const parsed = parseMessageId(raw);
       if (parsed) {
         if (parsed.chatId !== chat.id)
-          throw new ToolError("invalid_input", "reply_to belongs to a different chat than the recipient.");
+          throw new ToolError("invalid_reply_to", "reply_to belongs to a different chat than the recipient.");
         replyTo = parsed.msgId;
       } else if (/^\d+$/.test(raw)) replyTo = Number(raw);
-      else throw new ToolError("invalid_input", "reply_to must be a message id from this server.");
+      else throw new ToolError("invalid_reply_to", "reply_to must be a message id from this server.");
     }
 
     const newContact = await this.isNewContact(chat);
@@ -558,7 +665,7 @@ export class TeleService {
     });
     const m = { ...sent, chatId: sent.chatId || chat.id, outgoing: true };
     this.store.insertMessage(m);
-    return { message_id: messageId(m.chatId, m.id), status: "sent" };
+    return { message_id: messageId(m.chatId, m.id), status: "sent", reply_to_applied: replyTo !== undefined };
   }
 
   async getMessage(input: { id: string }): Promise<WireMessage> {
@@ -591,11 +698,11 @@ export class TeleService {
     let before: { date: number; seq: number } | undefined;
     if (input.before) {
       const m = /^(\d+)\.(\d+)$/.exec(input.before);
-      if (!m) throw new ToolError("invalid_input", "before must be a next_cursor value returned by list_messages.");
+      if (!m) throw new ToolError("invalid_cursor", "before must be a next_cursor value returned by list_messages.");
       before = { date: Number(m[1]), seq: Number(m[2]) };
     }
-    let chat: ChatInfo | undefined;
-    if (input.chat_id) chat = await this.resolveChatId(input.chat_id);
+    const chat = await this.chatFilter(input.chat_id);
+    if (chat === null) return { messages: [], next_cursor: null };
     if (chat && this.mode === "user" && this.connected) {
       const port = this.requirePort();
       let offsetId: number | undefined;
@@ -630,10 +737,11 @@ export class TeleService {
     let cursor: number;
     if (input.cursor !== undefined && input.cursor !== "") {
       if (!/^\d+$/.test(String(input.cursor)))
-        throw new ToolError("invalid_input", "cursor must be a cursor value returned by wait_for_messages.");
+        throw new ToolError("invalid_cursor", "cursor must be a cursor value returned by wait_for_messages.");
       cursor = Number(input.cursor);
     } else cursor = this.store.maxSeq();
-    const chat = input.chat_id ? await this.resolveChatId(input.chat_id) : undefined;
+    const chat = await this.chatFilter(input.chat_id);
+    if (chat === null) return { messages: [], cursor: String(cursor) };
 
     const take = () => this.store.inboundAfter(cursor, chat?.id, 100);
     let found = take();
@@ -666,7 +774,9 @@ export class TeleService {
     query?: string;
     limit?: number;
     type?: ChatType;
-  }): Promise<{ chats: { chat_id: string; name: string; type: ChatType; unread_count: number; last_message_at: string | null; username?: string }[] }> {
+  }): Promise<{
+    chats: { chat_id: string; channel: "telegram"; name: string; type: ChatType; unread_count: number; last_message_at: string | null; username?: string }[];
+  }> {
     this.checkAccount(input.account_id);
     const limit = clamp(input.limit ?? 50, 1, 200);
     if (this.mode === "user") {
@@ -679,6 +789,7 @@ export class TeleService {
         .filter((c) => !(this.me && c.id === this.me.id && !c.lastMessageAt))
         .map((c) => ({
           chat_id: c.id,
+          channel: CHANNEL,
           name: c.title,
           type: c.type,
           unread_count: c.unreadCount ?? 0,
@@ -696,9 +807,10 @@ export class TeleService {
   }): Promise<{ messages: WireMessage[] }> {
     this.checkAccount(input.account_id);
     const query = String(input.query ?? "").trim();
-    if (!query) throw new ToolError("invalid_input", "query is empty.");
+    if (query.length < 2) throw new ToolError("invalid_query", "query needs at least 2 characters.");
     const limit = clamp(input.limit ?? 20, 1, 100);
-    const chat = input.chat_id ? await this.resolveChatId(input.chat_id) : undefined;
+    const chat = await this.chatFilter(input.chat_id);
+    if (chat === null) return { messages: [] };
     const seen = new Map<string, StoredMessage>();
     if (this.mode === "user" && this.connected) {
       const port = this.requirePort();
@@ -711,14 +823,14 @@ export class TeleService {
     return { messages: all.map((m) => this.wire(m)) };
   }
 
-  async markRead(input: { chat_id: string; account_id?: string }): Promise<{ marked: true }> {
+  async markRead(input: { chat_id: string; account_id?: string }): Promise<{ marked: true; receipt_sent: boolean }> {
     this.checkAccount(input.account_id);
     if (this.mode === "bot") this.notForBots("mark_read");
     const port = this.requirePort();
     const chat = await this.resolveChatId(input.chat_id);
     await this.tg(() => port.markRead(chat));
     this.store.setUnread(chat.id, 0);
-    return { marked: true };
+    return { marked: true, receipt_sent: true };
   }
 }
 

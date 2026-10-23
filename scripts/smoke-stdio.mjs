@@ -14,8 +14,8 @@ await client.connect(transport);
 console.log("instructions:", client.getInstructions());
 const { tools } = await client.listTools();
 console.log("tools:", tools.map((t) => t.name).join(", "));
-for (const name of ["get_telegram_status", "get_usage", "list_accounts"]) {
-  const r = await client.callTool({ name, arguments: {} });
+for (const [name, args] of [["get_telegram_status", { phoneNumber: "+31612345678" }], ["get_usage", {}], ["list_accounts", {}]]) {
+  const r = await client.callTool({ name, arguments: args });
   console.log(name, r.isError ? "(error)" : "", r.content[0].text);
 }
 const s = await client.callTool({ name: "send_message", arguments: { to: { telegram_username: "@someone" }, text: "hi" } });

@@ -65,7 +65,7 @@ describe("one recipient per send", () => {
     store.upsertChat(group);
     expect((await service.resolveRecipient({ telegram_username: "@alice" })).id).toBe(alice.id);
     expect((await service.resolveRecipient({ telegram_username: "https://t.me/alice" })).id).toBe(alice.id);
-    expect((await service.resolveRecipient({ telegram_user_id: 100 })).id).toBe(alice.id);
+    expect((await service.resolveRecipient({ telegram_user_id: "100" })).id).toBe(alice.id);
     expect((await service.resolveRecipient({ phone: "+31 6 1234 5678" })).id).toBe(bob.id);
     expect((await service.resolveRecipient({ contact_id: group.id })).id).toBe(group.id);
     expect(await code(service.resolveRecipient({ telegram_username: "@nobody_here" }))).toBe("contact_not_found");
@@ -80,6 +80,7 @@ describe("send_message", () => {
     store.insertMessage(msg(alice, 5, "question?"));
     const r = await service.sendMessage({ to: { contact_id: alice.id }, text: "answer", reply_to: `${alice.id}:5` });
     expect(r.status).toBe("sent");
+    expect(r.reply_to_applied).toBe(true);
     expect(r.message_id).toMatch(/^100:\d+$/);
     expect(port.sent[0]).toMatchObject({ text: "answer", replyTo: 5 });
     const got = await service.getMessage({ id: r.message_id });
@@ -91,9 +92,32 @@ describe("send_message", () => {
     const { service, store } = await connected();
     store.upsertChat(alice);
     store.insertMessage(msg(alice, 1, "hi"));
-    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, text: "x", reply_to: "200:1" }))).toBe("invalid_input");
-    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, media_url: "http://example.com/a.jpg" }))).toBe("media_unavailable");
-    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, media_path: "/no/such/file.png" }))).toBe("media_unavailable");
+    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, text: "x", reply_to: "200:1" }))).toBe("invalid_reply_to");
+    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, text: "x", media_url: "http://example.com/a.jpg" }))).toBe("invalid_media_url");
+    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, text: "x", media_url: "not a url" }))).toBe("invalid_media_url");
+    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, text: "x", media_path: "/no/such/file.png" }))).toBe("media_unavailable");
+  });
+
+  it("text is required, also with media", async () => {
+    const { service, store, port } = await connected();
+    store.upsertChat(alice);
+    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, media_url: "https://example.com/a.jpg" }))).toBe("invalid_text");
+    expect(await code(service.sendMessage({ to: { contact_id: alice.id }, text: "   " }))).toBe("invalid_text");
+    expect(port.sent).toHaveLength(0);
+  });
+
+  it("reply_to_applied is false without a quote, opt_in is accepted", async () => {
+    const { service, store } = await connected();
+    store.upsertChat(alice);
+    store.insertMessage(msg(alice, 1, "hi"));
+    const r = await service.sendMessage({ to: { contact_id: alice.id }, text: "hello", opt_in: true });
+    expect(r).toMatchObject({ status: "sent", reply_to_applied: false });
+  });
+
+  it("an unknown account_id is account_not_found", async () => {
+    const { service } = await connected();
+    expect(await code(service.sendMessage({ account_id: "tg_999", to: { contact_id: "100" }, text: "x" }))).toBe("account_not_found");
+    expect(await code(service.listChats({ account_id: "nope" }))).toBe("account_not_found");
   });
 
   it("passes https media URLs to Telegram as is", async () => {
@@ -108,8 +132,9 @@ describe("send_message", () => {
   it("refuses everything with no_connected_account when nobody is logged in", async () => {
     const { service } = makeService();
     expect(await code(service.sendMessage({ to: { contact_id: "100" }, text: "x" }))).toBe("no_connected_account");
-    expect(service.status()).toMatchObject({ status: "disconnected" });
-    expect(service.status().detail).toContain("telemcp login");
+    const st = service.status({ phoneNumber: "+31612345678" });
+    expect(st).toMatchObject({ success: true, phone_number: "+31612345678", status: "not_initialized", live: false });
+    expect(st.detail).toContain("telemcp login");
   });
 });
 
@@ -171,20 +196,78 @@ describe("connect flow", () => {
   it("code then password", async () => {
     const ctx = makeService();
     ctx.connector.passwordNeeded = true;
-    expect(await ctx.service.connectTelegram({ phone: "+31612345678" })).toMatchObject({ status: "code_required" });
+    const phoneNumber = "+31612345678";
+    expect(await ctx.service.connectTelegram({ phone_number: "+31 6 1234 5678" })).toEqual({
+      success: true,
+      phone_number: phoneNumber,
+      status: "code_required",
+      session_id: "local",
+      account_id: "local",
+    });
     expect(ctx.service.account().status).toBe("connecting");
-    expect(await code(ctx.service.submitCode({ code: "00000" }))).toBe("invalid_code");
-    expect(await ctx.service.submitCode({ code: "12345" })).toMatchObject({ status: "password_required", hint: "pet" });
-    expect(await code(ctx.service.submitPassword({ password: "nope" }))).toBe("invalid_code");
-    expect(await ctx.service.submitPassword({ password: "secret" })).toMatchObject({ status: "connected" });
+    expect(ctx.service.status({ phoneNumber }).status).toBe("code_required");
+    expect(await code(ctx.service.submitCode({ phoneNumber, code: "00000" }))).toBe("invalid_code");
+    expect(await ctx.service.submitCode({ phoneNumber, code: "12345" })).toEqual({
+      success: true,
+      phone_number: phoneNumber,
+      status: "password_required",
+      telegram_user_id: null,
+      username: null,
+      hint: "pet",
+    });
+    expect(await code(ctx.service.submitPassword({ phoneNumber, password: "nope" }))).toBe("invalid_code");
+    expect(await ctx.service.submitPassword({ phoneNumber, password: "secret" })).toEqual({
+      success: true,
+      phone_number: phoneNumber,
+      status: "connected",
+      telegram_user_id: "1",
+      username: "me_user",
+    });
     expect(ctx.service.account()).toMatchObject({ status: "connected", identifier: "@me_user", id: "tg_1" });
-    expect(await ctx.service.disconnectTelegram()).toEqual({ disconnected: true });
+    expect(ctx.service.status({ phoneNumber })).toMatchObject({ status: "connected", live: true, telegram_user_id: "1" });
+    expect(await ctx.service.connectTelegram({ phone_number: phoneNumber })).toMatchObject({ status: "connected" });
+    expect(await ctx.service.disconnectTelegram({ phoneNumber })).toEqual({ success: true, phone_number: phoneNumber, status: "removed" });
     expect(ctx.service.account().status).toBe("disconnected");
+    expect(ctx.service.status({ phoneNumber: "+44 20 7946 0000" }).status).toBe("disconnected");
   });
 
   it("submit_telegram_code without connect_telegram says so", async () => {
     const { service } = makeService();
-    expect(await code(service.submitCode({ code: "1" }))).toBe("code_required");
+    expect(await code(service.submitCode({ phoneNumber: "+31612345678", code: "1" }))).toBe("code_required");
+  });
+
+  it("a phoneNumber that is not this server's number is account_not_found", async () => {
+    const ctx = makeService();
+    await ctx.service.connectTelegram({ phone_number: "+31612345678" });
+    expect(await code(ctx.service.submitCode({ phoneNumber: "+31699999999", code: "12345" }))).toBe("account_not_found");
+    expect(await code(Promise.resolve().then(() => ctx.service.status({ phoneNumber: "+31699999999" })))).toBe("account_not_found");
+    expect(await ctx.service.submitCode({ phoneNumber: "0031612345678".replace(/^00/, "+"), code: "12345" })).toMatchObject({ status: "connected" });
+  });
+
+  it("force_new logs out the saved session and starts a fresh login", async () => {
+    const ctx = makeService();
+    const phoneNumber = "+31612345678";
+    await ctx.service.connectTelegram({ phone_number: phoneNumber });
+    await ctx.service.submitCode({ phoneNumber, code: "12345" });
+    expect(ctx.service.connected).toBe(true);
+    expect(await code(ctx.service.connectTelegram({ phone_number: "+31699999999" }))).toBe("invalid_input");
+    expect(await ctx.service.connectTelegram({ phone_number: "+31699999999", force_new: true })).toMatchObject({
+      phone_number: "+31699999999",
+      status: "code_required",
+    });
+    expect(ctx.service.connected).toBe(false);
+    expect(await code(ctx.service.submitCode({ phoneNumber, code: "12345" }))).toBe("account_not_found");
+  });
+
+  it("mode qr is refused", async () => {
+    const { service } = makeService();
+    expect(await code(service.connectTelegram({ phone_number: "+31612345678", mode: "qr" }))).toBe("invalid_input");
+  });
+
+  it("bot mode reports no phone number and accepts any phoneNumber", async () => {
+    const port = new FakePort("bot", { id: "77", name: "Helper", username: "helper_bot", isBot: true });
+    const { service } = await connected({ port });
+    expect(service.status({ phoneNumber: "+10000000000" })).toMatchObject({ phone_number: null, status: "connected" });
   });
 });
 
@@ -204,7 +287,34 @@ describe("list and search in user mode", () => {
     store.insertMessage(msg(group, 3, "invoice question in the group"));
     const r = await service.searchMessages({ query: "invoice" });
     expect(r.messages.map((m) => m.id).sort()).toEqual(["-300:3", "100:1"]);
-    await service.markRead({ chat_id: alice.id });
+    expect(await service.markRead({ chat_id: alice.id })).toEqual({ marked: true, receipt_sent: true });
     expect(port.read).toEqual([alice.id]);
+    expect(all.chats.every((c) => c.channel === "telegram")).toBe(true);
+    expect(await code(service.markRead({ chat_id: "555" }))).toBe("contact_not_found");
+  });
+});
+
+describe("chat_id filters", () => {
+  it("an unknown chat_id returns an empty list, a malformed one is invalid_chat_id", async () => {
+    const { service, store } = await connected();
+    store.upsertChat(alice);
+    store.insertMessage(msg(alice, 1, "hello there"));
+    expect(await service.listMessages({ chat_id: "555" })).toEqual({ messages: [], next_cursor: null });
+    expect((await service.searchMessages({ query: "hello", chat_id: "555" })).messages).toEqual([]);
+    expect((await service.waitForMessages({ chat_id: "555", timeout_s: 0 })).messages).toEqual([]);
+    expect(await code(service.listMessages({ chat_id: "not a chat" }))).toBe("invalid_chat_id");
+    expect(await code(service.listMessages({ before: "garbage" }))).toBe("invalid_cursor");
+    expect(await code(service.waitForMessages({ cursor: "x1", timeout_s: 0 }))).toBe("invalid_cursor");
+    expect(await code(service.searchMessages({ query: " a " }))).toBe("invalid_query");
+  });
+});
+
+describe("account tools", () => {
+  it("list_accounts names the channel, get_usage reports the account counts", async () => {
+    const { service } = makeService();
+    expect(service.listAccounts().channels).toEqual([{ channel: "telegram", label: "Telegram", connect_kind: "code", max_accounts: 1 }]);
+    expect(service.usage()).toMatchObject({ status: "active", accounts_total: 1, accounts_connected: 0, accounts_cap: 1, ramp_day: null });
+    await service.attach((service as any).connector.port);
+    expect(service.usage()).toMatchObject({ accounts_connected: 1 });
   });
 });

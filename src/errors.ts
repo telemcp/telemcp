@@ -2,6 +2,7 @@
 
 export type ErrorCode =
   | "no_connected_account"
+  | "account_not_found"
   | "account_suspended"
   | "invalid_recipient"
   | "contact_not_found"
@@ -16,6 +17,12 @@ export type ErrorCode =
   | "invalid_code"
   | "message_not_found"
   | "invalid_input"
+  | "invalid_text"
+  | "invalid_media_url"
+  | "invalid_reply_to"
+  | "invalid_chat_id"
+  | "invalid_cursor"
+  | "invalid_query"
   | "telegram_error";
 
 export class ToolError extends Error {
@@ -35,6 +42,27 @@ export class ToolError extends Error {
     };
     if (this.retryAfterS !== undefined) out.retry_after_s = Math.max(0, Math.ceil(this.retryAfterS));
     return out;
+  }
+}
+
+/** The HTTP status a lifecycle tool (connect_*, submit_*, get_*_status, disconnect_*) reports for a refusal. */
+export function lifecycleStatus(code: ErrorCode): number {
+  switch (code) {
+    case "account_suspended":
+      return 403;
+    case "no_connected_account":
+    case "account_not_found":
+    case "contact_not_found":
+      return 404;
+    case "code_required":
+    case "password_required":
+      return 409;
+    case "rate_limited":
+      return 429;
+    case "telegram_error":
+      return 502;
+    default:
+      return 400;
   }
 }
 

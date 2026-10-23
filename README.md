@@ -132,30 +132,36 @@ Telegram limits what bots can do. A bot only sees messages sent to it after it j
 
 ## Tools
 
-telemcp follows door-contract 1.0 (`contract/door-contract.json`): the tool names, fields and error codes stay the same across versions.
+telemcp follows door-contract 1.0 (`contract/door-contract.json`), which defines the tool names, input fields and error codes.
 
 | Tool | What it does |
 | --- | --- |
-| `list_accounts` | The connected Telegram account (there is exactly one). |
-| `get_telegram_status` | Connection status, account, today's usage, and what to do next when not connected. |
-| `connect_telegram` | Start a login from the assistant: sends the login code to your phone. |
-| `submit_telegram_code` | Finish the login with the code. |
-| `submit_telegram_password` | Finish the login with your two step verification password. |
-| `disconnect_telegram` | Log out and delete the saved session. |
+| `list_accounts` | The connected Telegram account (there is exactly one) and the channel it uses. |
+| `get_telegram_status` | Connection status (`phoneNumber`), today's limits, and what to do next when not connected. |
+| `connect_telegram` | Start a login from the assistant with `phone_number` (international format): sends the login code to your phone. `mode` is `code` (QR login is not supported here); `force_new: true` logs out the saved session first. |
+| `submit_telegram_code` | Finish the login with `phoneNumber` and `code`. |
+| `submit_telegram_password` | Finish the login with `phoneNumber` and your two step verification `password`. |
+| `disconnect_telegram` | Log out (`phoneNumber`) and delete the saved session. |
 | `list_chats` | Chats, most recent first, with unread counts. Filter by name or by type `user`, `group` or `channel`. |
 | `list_groups` | Groups and supergroups. |
 | `list_channels` | Broadcast channels. |
 | `list_messages` | Messages newest first, for one chat or all chats, inbound or outbound, with a cursor for older pages. |
 | `get_message` | One message by id. |
-| `search_messages` | Telegram's own search (user accounts) plus full text search over the local database. |
-| `send_message` | Send text, an image or a file to exactly one recipient: `telegram_username`, `telegram_user_id`, `phone` (someone in your contacts) or `contact_id` (any chat id). Supports `reply_to`, `media_url` (https) and `media_path` (a local file). |
+| `search_messages` | Telegram's own search (user accounts) plus full text search over the local database. `query` is 2 to 200 characters. |
+| `send_message` | Send text, an image or a file to exactly one recipient: `telegram_username`, `telegram_user_id` (as a string), `phone` (someone in your contacts) or `contact_id` (any chat id). `text` is required (up to 4096 characters; the caption when media is attached). Supports `reply_to`, `media_url` (https), `media_path` (a local file) and `opt_in` (accepted and logged). |
 | `wait_for_messages` | Wait up to 55 seconds for new inbound messages; pass the returned cursor to the next call. |
-| `mark_read` | Mark a chat as read. |
-| `get_usage` | Today's sends and new contacts against the daily caps. |
+| `mark_read` | Mark a chat as read and send the read receipt. |
+| `get_usage` | Today's sends and new contacts against the daily caps, account status and account counts. |
 
 There is no bulk send tool. Every `send_message` call has one recipient.
 
-When a tool refuses, the result is JSON like `{"error_code": "daily_send_cap", "error": "...", "retry_after_s": 3600}`. Codes: `no_connected_account`, `account_suspended`, `invalid_recipient`, `contact_not_found`, `message_not_found`, `needs_inbound_first`, `daily_send_cap`, `new_contact_cap`, `rate_limited`, `media_unavailable`, `not_available_for_bots`, `code_required`, `password_required`, `invalid_code`, `invalid_input`, `telegram_error`.
+An unknown `chat_id` used as a filter on `list_messages`, `wait_for_messages` or `search_messages` returns an empty list.
+
+The phone number tools take the number in two spellings: `connect_telegram` takes `phone_number`, the others take `phoneNumber`. A `phoneNumber` that is not this server's number is refused with error code 404. In bot mode there is no phone number: any value is accepted and `phone_number` is null.
+
+When a tool refuses, the result is JSON like `{"error_code": "daily_send_cap", "error": "...", "retry_after_s": 3600}`. Codes: `no_connected_account`, `account_not_found`, `account_suspended`, `invalid_recipient`, `contact_not_found`, `message_not_found`, `needs_inbound_first`, `daily_send_cap`, `new_contact_cap`, `rate_limited`, `media_unavailable`, `invalid_media_url`, `invalid_text`, `invalid_reply_to`, `invalid_chat_id`, `invalid_cursor`, `invalid_query`, `not_available_for_bots`, `code_required`, `password_required`, `invalid_code`, `invalid_input`, `telegram_error`.
+
+The connection tools (`connect_telegram`, `submit_telegram_code`, `submit_telegram_password`, `get_telegram_status`, `disconnect_telegram`) answer `{"success": true, "phone_number": "+31...", "status": "..."}` and refuse with an HTTP style status: `{"success": false, "error_code": 404, "error": "No connection for that number."}` (400 invalid input, code or password; 403 account suspended; 404 not connected or another number; 409 code or password asked out of order; 429 rate limited, with `retry_after_s`; 502 any other Telegram error).
 
 ## Safety limits
 

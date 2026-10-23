@@ -137,7 +137,9 @@ export function validate(schema: JsonSchema, value: unknown, path = "input"): vo
   }
 }
 
-/** The input schema as advertised over MCP: the contract schema minus the non JSON Schema local_only marker. */
+const MARKERS = new Set(["local_only", "hosted_only"]);
+
+/** The input schema as advertised over MCP: the contract schema minus the non JSON Schema local_only / hosted_only markers. */
 export function advertisedSchema(schema: JsonSchema): JsonSchema {
-  return JSON.parse(JSON.stringify(schema, (k, v) => (k === "local_only" ? undefined : v)));
+  return JSON.parse(JSON.stringify(schema, (k, v) => (MARKERS.has(k) ? undefined : v)));
 }
