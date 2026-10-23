@@ -1,0 +1,71 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.telemcp/telemcp",
+  "title": "telemcp",
+  "description": "Self-hosted Telegram MCP server: read, search and send with your own account or a bot.",
+  "websiteUrl": "https://telemcp.com",
+  "repository": {
+    "url": "https://github.com/telemcp/telemcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "telemcp",
+      "version": "0.1.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "TELEGRAM_API_ID",
+          "description": "Your own api_id from my.telegram.org (API development tools). Not needed after `telemcp login` saved it.",
+          "isRequired": false,
+          "format": "number"
+        },
+        {
+          "name": "TELEGRAM_API_HASH",
+          "description": "Your own api_hash from my.telegram.org. Not needed after `telemcp login` saved it.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "TELEMCP_BOT_TOKEN",
+          "description": "Optional. Run as a Telegram bot with this token from @BotFather instead of a user account.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "TELEMCP_HOME",
+          "description": "Optional. Data directory for the session, config.json and the local database. Default ~/.telemcp.",
+          "isRequired": false
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/telemcp/telemcp:0.1.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "TELEGRAM_API_ID",
+          "description": "Your own api_id from my.telegram.org.",
+          "isRequired": false,
+          "format": "number"
+        },
+        {
+          "name": "TELEGRAM_API_HASH",
+          "description": "Your own api_hash from my.telegram.org.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "TELEMCP_BOT_TOKEN",
+          "description": "Optional. Run as a Telegram bot with this token from @BotFather.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

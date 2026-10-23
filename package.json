@@ -1,0 +1,67 @@
+{
+  "name": "telemcp",
+  "version": "0.1.0",
+  "description": "Open source Telegram MCP server. Connect your own Telegram account or a bot to Claude and other AI assistants. Runs on your machine.",
+  "type": "module",
+  "license": "MIT",
+  "mcpName": "io.github.telemcp/telemcp",
+  "bin": {
+    "telemcp": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist/**/*.js",
+    "contract/door-contract.json",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "server.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telemcp/telemcp.git"
+  },
+  "homepage": "https://telemcp.com",
+  "bugs": {
+    "url": "https://github.com/telemcp/telemcp/issues"
+  },
+  "keywords": [
+    "telegram",
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "telegram-mcp",
+    "telegram-bot",
+    "mtproto",
+    "claude",
+    "claude-desktop",
+    "claude-code",
+    "cursor",
+    "ai-assistant",
+    "self-hosted"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --no-file-parallelism",
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "better-sqlite3": "12.11.1",
+    "big-integer": "1.6.52",
+    "telegram": "2.26.22",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "20.19.43",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}
